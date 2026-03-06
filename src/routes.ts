@@ -227,8 +227,8 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
       const grace = parseInt((request.query.grace as string) ?? '0', 10);
       const limit = parseInt((request.query.limit as string) ?? '100', 10);
 
-      if (isNaN(grace) || isNaN(limit)) {
-        return reply.code(400).send({ error: 'Validation failed', details: ['grace and limit must be numbers'] });
+      if (isNaN(grace) || isNaN(limit) || grace < 0 || limit < 1) {
+        return reply.code(400).send({ error: 'Validation failed', details: ['grace must be >= 0 and limit must be >= 1'] });
       }
 
       const removed = await queue.clean(grace, limit, typeParam as any);
