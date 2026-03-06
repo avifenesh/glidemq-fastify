@@ -1,0 +1,74 @@
+{
+  "name": "@glidemq/fastify",
+  "version": "0.1.0",
+  "description": "Fastify plugin for glide-mq - queue management REST API and SSE events",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prepublishOnly": "npm test && npm run build"
+  },
+  "keywords": [
+    "fastify",
+    "plugin",
+    "message-queue",
+    "glide-mq",
+    "valkey",
+    "redis",
+    "job-queue",
+    "sse",
+    "rest-api"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "author": "Avi Fenesh",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/avifenesh/glidemq-fastify.git"
+  },
+  "bugs": {
+    "url": "https://github.com/avifenesh/glidemq-fastify/issues"
+  },
+  "homepage": "https://github.com/avifenesh/glidemq-fastify#readme",
+  "sideEffects": false,
+  "dependencies": {
+    "fastify-plugin": "^5.0.0"
+  },
+  "peerDependencies": {
+    "glide-mq": ">=0.8.0",
+    "fastify": ">=5.0.0",
+    "zod": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "fastify": "^5.0.0",
+    "glide-mq": "^0.8.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "zod": "^3.24.0"
+  }
+}

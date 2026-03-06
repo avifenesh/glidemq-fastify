@@ -1,0 +1,58 @@
+let z: typeof import('zod') | null = null;
+
+try {
+  z = require('zod');
+} catch {
+  // Zod not installed - validation disabled
+}
+
+export function hasZod(): boolean {
+  return z !== null;
+}
+
+export function buildSchemas() {
+  if (!z) return null;
+
+  const addJobSchema = z.object({
+    name: z.string().min(1),
+    data: z.unknown().optional().default({}),
+    opts: z
+      .object({
+        delay: z.number().optional(),
+        priority: z.number().optional(),
+        attempts: z.number().optional(),
+        timeout: z.number().optional(),
+        removeOnComplete: z
+          .union([z.boolean(), z.number(), z.object({ age: z.number(), count: z.number() })])
+          .optional(),
+        removeOnFail: z.union([z.boolean(), z.number(), z.object({ age: z.number(), count: z.number() })]).optional(),
+      })
+      .optional()
+      .default({}),
+  });
+
+  const getJobsQuerySchema = z.object({
+    type: z.enum(['waiting', 'active', 'delayed', 'completed', 'failed']).default('waiting'),
+    start: z.coerce.number().default(0),
+    end: z.coerce.number().default(-1),
+  });
+
+  const cleanQuerySchema = z.object({
+    grace: z.coerce.number().int().min(0).default(0),
+    limit: z.coerce.number().int().min(1).default(100),
+    type: z.enum(['completed', 'failed']).default('completed'),
+  });
+
+  const retryBodySchema = z.object({
+    count: z.coerce.number().int().min(1).optional(),
+  });
+
+  return {
+    addJobSchema,
+    getJobsQuerySchema,
+    cleanQuerySchema,
+    retryBodySchema,
+  };
+}
+
+export type Schemas = NonNullable<ReturnType<typeof buildSchemas>>;
