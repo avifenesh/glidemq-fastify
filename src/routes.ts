@@ -1,4 +1,3 @@
-import fp from 'fastify-plugin';
 import type { FastifyPluginAsync } from 'fastify';
 import type { GlideMQRoutesOptions, QueueRegistry } from './types';
 import { serializeJob, serializeJobs } from './serializers';
@@ -9,7 +8,10 @@ const VALID_QUEUE_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
 const VALID_JOB_TYPES = ['waiting', 'active', 'delayed', 'completed', 'failed'] as const;
 const VALID_CLEAN_TYPES = ['completed', 'failed'] as const;
 
-const glideMQRoutesImpl: FastifyPluginAsync<GlideMQRoutesOptions> = async (fastify, options) => {
+export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fastify, options) => {
+  if (!fastify.hasDecorator('glidemq')) {
+    throw new Error('glideMQPlugin must be registered before glideMQRoutes');
+  }
   const allowedQueues = options?.queues;
   const schemas = hasZod() ? buildSchemas() : null;
 
@@ -247,9 +249,3 @@ const glideMQRoutesImpl: FastifyPluginAsync<GlideMQRoutesOptions> = async (fasti
   // GET /:name/events - SSE stream
   createEventsRoute(fastify);
 };
-
-export const glideMQRoutes = fp(glideMQRoutesImpl, {
-  fastify: '5.x',
-  name: '@glidemq/fastify-routes',
-  decorators: { fastify: ['glidemq'] },
-});
