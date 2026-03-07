@@ -129,7 +129,7 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
         }
         const { type, start, end, excludeData } = result.data;
         const jobs = excludeData
-          ? await queue.getJobs(type as any, start, end, { excludeData: true } as any)
+          ? await (queue as any).getJobs(type, start, end, { excludeData: true })
           : await queue.getJobs(type as any, start, end);
         return reply.send(serializeJobs(jobs));
       }
@@ -150,7 +150,7 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
 
       const excludeData = request.query.excludeData === 'true' || request.query.excludeData === '1';
       const jobs = excludeData
-        ? await queue.getJobs(typeParam as any, start, end, { excludeData: true } as any)
+        ? await (queue as any).getJobs(typeParam, start, end, { excludeData: true })
         : await queue.getJobs(typeParam as any, start, end);
       return reply.send(serializeJobs(jobs));
     },
