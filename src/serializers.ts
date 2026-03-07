@@ -2,7 +2,7 @@ import type { Job } from 'glide-mq';
 import type { JobResponse } from './types';
 
 export function serializeJob(job: Job): JobResponse {
-  return {
+  const result: JobResponse = {
     id: job.id,
     name: job.name,
     data: job.data,
@@ -15,6 +15,14 @@ export function serializeJob(job: Job): JobResponse {
     finishedOn: job.finishedOn,
     processedOn: job.processedOn,
   };
+
+  if ((job as any).parentId != null) result.parentId = (job as any).parentId;
+  if ((job as any).parentQueue != null) result.parentQueue = (job as any).parentQueue;
+  if ((job as any).orderingKey != null) result.orderingKey = (job as any).orderingKey;
+  if ((job as any).cost != null) result.cost = (job as any).cost;
+  if ((job as any).schedulerName != null) result.schedulerName = (job as any).schedulerName;
+
+  return result;
 }
 
 export function serializeJobs(jobs: Job[]): JobResponse[] {
