@@ -7,6 +7,21 @@ import { createEventsRoute } from './events';
 const VALID_QUEUE_NAME = /^[a-zA-Z0-9_-]{1,128}$/;
 const VALID_JOB_TYPES = ['waiting', 'active', 'delayed', 'completed', 'failed'] as const;
 const VALID_CLEAN_TYPES = ['completed', 'failed'] as const;
+const VALID_METRICS_TYPES = ['completed', 'failed'] as const;
+const VALID_SCHEDULER_NAME = /^[a-zA-Z0-9_:.-]{1,256}$/;
+
+const ALLOWED_OPTS = [
+  'delay', 'priority', 'attempts', 'timeout', 'removeOnComplete', 'removeOnFail',
+  'jobId', 'lifo', 'deduplication', 'ordering', 'cost', 'backoff', 'parent', 'ttl',
+];
+
+function pickOpts(rawOpts: Record<string, unknown>): Record<string, unknown> {
+  const safeOpts: Record<string, unknown> = {};
+  for (const key of ALLOWED_OPTS) {
+    if (key in rawOpts) safeOpts[key] = rawOpts[key];
+  }
+  return safeOpts;
+}
 
 export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fastify, options) => {
   if (!fastify.hasDecorator('glidemq')) {
@@ -63,19 +78,43 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
       return reply.code(400).send({ error: 'Validation failed', details: ['name: Required'] });
     }
 
-    const ALLOWED_OPTS = ['delay', 'priority', 'attempts', 'timeout', 'removeOnComplete', 'removeOnFail'];
     const rawOpts = body.opts ?? {};
-    const safeOpts: Record<string, unknown> = {};
-    for (const key of ALLOWED_OPTS) {
-      if (key in rawOpts) safeOpts[key] = rawOpts[key];
-    }
+    const safeOpts = pickOpts(rawOpts);
     const job = await queue.add(body.name, body.data ?? {}, safeOpts as any);
     if (!job) return reply.code(409).send({ error: 'Job deduplicated' });
     return reply.code(201).send(serializeJob(job));
   });
 
+  // POST /:name/jobs/wait - Add a job and wait for result
+  fastify.post<{ Params: { name: string } }>('/:name/jobs/wait', async (request, reply) => {
+    const { name } = request.params;
+    const registry = getRegistry();
+    const { queue } = registry.get(name);
+
+    if (schemas) {
+      const result = schemas.addAndWaitBodySchema.safeParse(request.body);
+      if (!result.success) {
+        const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+        return reply.code(400).send({ error: 'Validation failed', details: issues });
+      }
+      const { name: jobName, data, opts, waitTimeout } = result.data;
+      const returnvalue = await (queue as any).addAndWait(jobName, data, opts as any, waitTimeout);
+      return reply.send({ returnvalue });
+    }
+
+    const body = request.body as any;
+    if (!body?.name || typeof body.name !== 'string') {
+      return reply.code(400).send({ error: 'Validation failed', details: ['name: Required'] });
+    }
+
+    const rawOpts = body.opts ?? {};
+    const safeOpts = pickOpts(rawOpts);
+    const returnvalue = await (queue as any).addAndWait(body.name, body.data ?? {}, safeOpts as any, body.waitTimeout);
+    return reply.send({ returnvalue });
+  });
+
   // GET /:name/jobs - List jobs
-  fastify.get<{ Params: { name: string }; Querystring: { type?: string; start?: string; end?: string } }>(
+  fastify.get<{ Params: { name: string }; Querystring: { type?: string; start?: string; end?: string; excludeData?: string } }>(
     '/:name/jobs',
     async (request, reply) => {
       const { name } = request.params;
@@ -88,8 +127,10 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
           const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
           return reply.code(400).send({ error: 'Validation failed', details: issues });
         }
-        const { type, start, end } = result.data;
-        const jobs = await queue.getJobs(type as any, start, end);
+        const { type, start, end, excludeData } = result.data;
+        const jobs = excludeData
+          ? await (queue as any).getJobs(type, start, end, { excludeData: true })
+          : await queue.getJobs(type as any, start, end);
         return reply.send(serializeJobs(jobs));
       }
 
@@ -107,7 +148,10 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
         return reply.code(400).send({ error: 'Validation failed', details: ['start and end must be numbers'] });
       }
 
-      const jobs = await queue.getJobs(typeParam as any, start, end);
+      const excludeData = request.query.excludeData === 'true' || request.query.excludeData === '1';
+      const jobs = excludeData
+        ? await (queue as any).getJobs(typeParam, start, end, { excludeData: true })
+        : await queue.getJobs(typeParam as any, start, end);
       return reply.send(serializeJobs(jobs));
     },
   );
@@ -125,6 +169,83 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
     return reply.send(serializeJob(job));
   });
 
+  // POST /:name/jobs/:id/priority - Change job priority
+  fastify.post<{ Params: { name: string; id: string } }>('/:name/jobs/:id/priority', async (request, reply) => {
+    const { name, id } = request.params;
+    const registry = getRegistry();
+    const { queue } = registry.get(name);
+
+    const job = await queue.getJob(id);
+    if (!job) {
+      return reply.code(404).send({ error: 'Job not found' });
+    }
+
+    if (schemas) {
+      const result = schemas.changePriorityBodySchema.safeParse(request.body);
+      if (!result.success) {
+        const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+        return reply.code(400).send({ error: 'Validation failed', details: issues });
+      }
+      await (job as any).changePriority(result.data.priority);
+      return reply.send({ ok: true });
+    }
+
+    const body = request.body as any;
+    const priority = body?.priority;
+    if (priority === undefined || typeof priority !== 'number' || !Number.isInteger(priority) || priority < 0) {
+      return reply.code(400).send({ error: 'Validation failed', details: ['priority must be a non-negative integer'] });
+    }
+
+    await (job as any).changePriority(priority);
+    return reply.send({ ok: true });
+  });
+
+  // POST /:name/jobs/:id/delay - Change job delay
+  fastify.post<{ Params: { name: string; id: string } }>('/:name/jobs/:id/delay', async (request, reply) => {
+    const { name, id } = request.params;
+    const registry = getRegistry();
+    const { queue } = registry.get(name);
+
+    const job = await queue.getJob(id);
+    if (!job) {
+      return reply.code(404).send({ error: 'Job not found' });
+    }
+
+    if (schemas) {
+      const result = schemas.changeDelayBodySchema.safeParse(request.body);
+      if (!result.success) {
+        const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+        return reply.code(400).send({ error: 'Validation failed', details: issues });
+      }
+      await (job as any).changeDelay(result.data.delay);
+      return reply.send({ ok: true });
+    }
+
+    const body = request.body as any;
+    const delay = body?.delay;
+    if (delay === undefined || typeof delay !== 'number' || !Number.isInteger(delay) || delay < 0) {
+      return reply.code(400).send({ error: 'Validation failed', details: ['delay must be a non-negative integer'] });
+    }
+
+    await (job as any).changeDelay(delay);
+    return reply.send({ ok: true });
+  });
+
+  // POST /:name/jobs/:id/promote - Promote a delayed job
+  fastify.post<{ Params: { name: string; id: string } }>('/:name/jobs/:id/promote', async (request, reply) => {
+    const { name, id } = request.params;
+    const registry = getRegistry();
+    const { queue } = registry.get(name);
+
+    const job = await queue.getJob(id);
+    if (!job) {
+      return reply.code(404).send({ error: 'Job not found' });
+    }
+
+    await (job as any).promote();
+    return reply.send({ ok: true });
+  });
+
   // GET /:name/counts - Get job counts
   fastify.get<{ Params: { name: string } }>('/:name/counts', async (request, reply) => {
     const { name } = request.params;
@@ -134,6 +255,44 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
     const counts = await queue.getJobCounts();
     return reply.send(counts);
   });
+
+  // GET /:name/metrics - Get queue metrics
+  fastify.get<{ Params: { name: string }; Querystring: { type?: string; start?: string; end?: string } }>(
+    '/:name/metrics',
+    async (request, reply) => {
+      const { name } = request.params;
+      const registry = getRegistry();
+      const { queue } = registry.get(name);
+
+      if (schemas) {
+        const result = schemas.metricsQuerySchema.safeParse(request.query);
+        if (!result.success) {
+          const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+          return reply.code(400).send({ error: 'Validation failed', details: issues });
+        }
+        const { type, start, end } = result.data;
+        const metrics = await (queue as any).getMetrics(type, { start, end });
+        return reply.send(metrics);
+      }
+
+      const typeParam = (request.query.type as string) ?? '';
+      if (!VALID_METRICS_TYPES.includes(typeParam as any)) {
+        return reply
+          .code(400)
+          .send({ error: 'Validation failed', details: [`type: must be one of ${VALID_METRICS_TYPES.join(', ')}`] });
+      }
+
+      const start = parseInt((request.query.start as string) ?? '0', 10);
+      const end = parseInt((request.query.end as string) ?? '-1', 10);
+
+      if (isNaN(start) || isNaN(end)) {
+        return reply.code(400).send({ error: 'Validation failed', details: ['start and end must be numbers'] });
+      }
+
+      const metrics = await (queue as any).getMetrics(typeParam, { start, end });
+      return reply.send(metrics);
+    },
+  );
 
   // POST /:name/pause - Pause queue
   fastify.post<{ Params: { name: string } }>('/:name/pause', async (request, reply) => {
@@ -244,6 +403,82 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
 
     const workers = await queue.getWorkers();
     return reply.send(workers);
+  });
+
+  // --- Scheduler endpoints ---
+
+  // GET /:name/schedulers - List all schedulers
+  fastify.get<{ Params: { name: string } }>('/:name/schedulers', async (request, reply) => {
+    const { name } = request.params;
+    const registry = getRegistry();
+    const { queue } = registry.get(name);
+
+    const schedulers = await (queue as any).getRepeatableJobs();
+    return reply.send(schedulers);
+  });
+
+  // GET /:name/schedulers/:schedulerName - Get one scheduler
+  fastify.get<{ Params: { name: string; schedulerName: string } }>('/:name/schedulers/:schedulerName', async (request, reply) => {
+    const { name, schedulerName } = request.params;
+
+    if (!VALID_SCHEDULER_NAME.test(schedulerName)) {
+      return reply.code(400).send({ error: 'Invalid scheduler name' });
+    }
+
+    const registry = getRegistry();
+    const { queue } = registry.get(name);
+
+    const scheduler = await (queue as any).getJobScheduler(schedulerName);
+    if (!scheduler) {
+      return reply.code(404).send({ error: 'Scheduler not found' });
+    }
+    return reply.send(scheduler);
+  });
+
+  // PUT /:name/schedulers/:schedulerName - Upsert a scheduler
+  fastify.put<{ Params: { name: string; schedulerName: string } }>('/:name/schedulers/:schedulerName', async (request, reply) => {
+    const { name, schedulerName } = request.params;
+
+    if (!VALID_SCHEDULER_NAME.test(schedulerName)) {
+      return reply.code(400).send({ error: 'Invalid scheduler name' });
+    }
+
+    const registry = getRegistry();
+    const { queue } = registry.get(name);
+
+    if (schemas) {
+      const result = schemas.upsertSchedulerBodySchema.safeParse(request.body);
+      if (!result.success) {
+        const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+        return reply.code(400).send({ error: 'Validation failed', details: issues });
+      }
+      const { schedule, template } = result.data;
+      const job = await (queue as any).upsertJobScheduler(schedulerName, schedule, template);
+      return reply.send(job ? serializeJob(job) : { ok: true });
+    }
+
+    const body = request.body as any;
+    if (!body?.schedule || typeof body.schedule !== 'object') {
+      return reply.code(400).send({ error: 'Validation failed', details: ['schedule: Required'] });
+    }
+
+    const job = await (queue as any).upsertJobScheduler(schedulerName, body.schedule, body.template);
+    return reply.send(job ? serializeJob(job) : { ok: true });
+  });
+
+  // DELETE /:name/schedulers/:schedulerName - Remove a scheduler
+  fastify.delete<{ Params: { name: string; schedulerName: string } }>('/:name/schedulers/:schedulerName', async (request, reply) => {
+    const { name, schedulerName } = request.params;
+
+    if (!VALID_SCHEDULER_NAME.test(schedulerName)) {
+      return reply.code(400).send({ error: 'Invalid scheduler name' });
+    }
+
+    const registry = getRegistry();
+    const { queue } = registry.get(name);
+
+    await (queue as any).removeJobScheduler(schedulerName);
+    return reply.code(204).send();
   });
 
   // GET /:name/events - SSE stream
