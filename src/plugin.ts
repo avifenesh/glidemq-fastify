@@ -9,6 +9,13 @@ const glideMQPluginImpl: FastifyPluginAsync<GlideMQPluginOptions> = async (fasti
       ? (options as unknown as QueueRegistry)
       : new QueueRegistryImpl(options);
 
+  // Eagerly initialize producers so connection errors surface early
+  if (options.producers) {
+    for (const name of Object.keys(options.producers)) {
+      registry.getProducer(name);
+    }
+  }
+
   fastify.decorate('glidemq', registry);
 
   fastify.addHook('onClose', async () => {

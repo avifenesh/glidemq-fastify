@@ -9,6 +9,7 @@ export type {
   GlideMQPluginOptions,
   GlideMQRoutesOptions,
   QueueConfig,
+  ProducerConfig,
   QueueRegistry,
   ManagedQueue,
   JobResponse,

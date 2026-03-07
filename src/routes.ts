@@ -13,6 +13,7 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
     throw new Error('glideMQPlugin must be registered before glideMQRoutes');
   }
   const allowedQueues = options?.queues;
+  const allowedProducers = options?.producers;
   const schemas = hasZod() ? buildSchemas() : null;
 
   function getRegistry(): QueueRegistry {
@@ -26,6 +27,16 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
 
     if (!VALID_QUEUE_NAME.test(name)) {
       return reply.code(400).send({ error: 'Invalid queue name' });
+    }
+
+    // Allow produce endpoint to pass through for producer-only names
+    const url = request.url;
+    if (url.endsWith('/produce')) {
+      const registry = getRegistry();
+      if ((allowedProducers && !allowedProducers.includes(name)) || !registry.hasProducer(name)) {
+        return reply.code(404).send({ error: 'Producer not found or not accessible' });
+      }
+      return;
     }
 
     const registry = getRegistry();
@@ -244,6 +255,40 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
 
     const workers = await queue.getWorkers();
     return reply.send(workers);
+  });
+
+  // POST /:name/produce - Add a job via Producer (lightweight, serverless)
+  fastify.post<{ Params: { name: string } }>('/:name/produce', async (request, reply) => {
+    const { name } = request.params;
+    const registry = getRegistry();
+    const producer = registry.getProducer(name);
+
+    if (schemas) {
+      const result = schemas.addJobSchema.safeParse(request.body);
+      if (!result.success) {
+        const issues = result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`);
+        return reply.code(400).send({ error: 'Validation failed', details: issues });
+      }
+      const { name: jobName, data, opts } = result.data;
+      const id = await producer.add(jobName, data, opts as any);
+      if (!id) return reply.code(409).send({ error: 'Job deduplicated' });
+      return reply.code(201).send({ id });
+    }
+
+    const body = request.body as any;
+    if (!body?.name || typeof body.name !== 'string') {
+      return reply.code(400).send({ error: 'Validation failed', details: ['name: Required'] });
+    }
+
+    const ALLOWED_OPTS = ['delay', 'priority', 'attempts', 'timeout', 'removeOnComplete', 'removeOnFail'];
+    const rawOpts = body.opts ?? {};
+    const safeOpts: Record<string, unknown> = {};
+    for (const key of ALLOWED_OPTS) {
+      if (key in rawOpts) safeOpts[key] = rawOpts[key];
+    }
+    const id = await producer.add(body.name, body.data ?? {}, safeOpts as any);
+    if (!id) return reply.code(409).send({ error: 'Job deduplicated' });
+    return reply.code(201).send({ id });
   });
 
   // GET /:name/events - SSE stream

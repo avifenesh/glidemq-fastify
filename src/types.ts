@@ -1,4 +1,4 @@
-import type { Queue, Worker, Job, ConnectionOptions } from 'glide-mq';
+import type { Queue, Worker, Job, Producer, ConnectionOptions, Serializer } from 'glide-mq';
 
 // --- Config ---
 
@@ -8,9 +8,15 @@ export interface QueueConfig<D = any, R = any> {
   workerOpts?: Record<string, unknown>;
 }
 
+export interface ProducerConfig {
+  compression?: 'none' | 'gzip';
+  serializer?: Serializer;
+}
+
 export interface GlideMQConfig {
   connection?: ConnectionOptions;
   queues: Record<string, QueueConfig>;
+  producers?: Record<string, ProducerConfig>;
   prefix?: string;
   testing?: boolean;
 }
@@ -24,8 +30,11 @@ export interface ManagedQueue<D = any, R = any> {
 
 export interface QueueRegistry {
   get<D = any, R = any>(name: string): ManagedQueue<D, R>;
+  getProducer<D = any>(name: string): Producer<D>;
   has(name: string): boolean;
+  hasProducer(name: string): boolean;
   names(): string[];
+  producerNames(): string[];
   closeAll(): Promise<void>;
   readonly testing: boolean;
   getConnection(): ConnectionOptions | undefined;
@@ -38,6 +47,7 @@ export type GlideMQPluginOptions = GlideMQConfig;
 
 export interface GlideMQRoutesOptions {
   queues?: string[];
+  producers?: string[];
 }
 
 // --- Job serialization ---

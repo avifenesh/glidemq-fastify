@@ -68,6 +68,7 @@ Core plugin. Creates a `QueueRegistry` and decorates the Fastify instance with `
 interface GlideMQPluginOptions {
   connection?: ConnectionOptions; // Required unless testing: true
   queues: Record<string, QueueConfig>;
+  producers?: Record<string, ProducerConfig>; // Lightweight producers (serverless)
   prefix?: string;                // Key prefix (default: 'glide')
   testing?: boolean;              // Use TestQueue/TestWorker (no Valkey)
 }
@@ -76,6 +77,11 @@ interface QueueConfig {
   processor?: (job: Job) => Promise<any>; // Omit for producer-only
   concurrency?: number;                   // Default: 1
   workerOpts?: Record<string, unknown>;
+}
+
+interface ProducerConfig {
+  compression?: 'none' | 'gzip';
+  serializer?: Serializer;
 }
 ```
 
@@ -92,7 +98,8 @@ Pre-built REST API routes plugin. Requires `glideMQPlugin` to be registered firs
 
 ```ts
 interface GlideMQRoutesOptions {
-  queues?: string[];    // Restrict to specific queues
+  queues?: string[];      // Restrict to specific queues
+  producers?: string[];   // Restrict to specific producers
 }
 ```
 
@@ -111,6 +118,7 @@ interface GlideMQRoutesOptions {
 | DELETE | `/:name/clean` | Clean old jobs (query: `grace`, `limit`, `type`) |
 | GET | `/:name/workers` | List active workers |
 | GET | `/:name/events` | SSE event stream |
+| POST | `/:name/produce` | Add a job via Producer (lightweight, serverless) |
 
 ### Adding Jobs
 
@@ -142,6 +150,48 @@ curl -X DELETE 'http://localhost:3000/api/queues/emails/clean?grace=3600000&limi
 curl -X DELETE 'http://localhost:3000/api/queues/emails/clean?type=failed'
 ```
 
+### Serverless (Producer)
+
+`Producer` is a lightweight alternative to `Queue` for serverless environments — it only supports `add()` and `addBulk()`, returns string IDs, and requires no workers or event listeners.
+
+Configure producers alongside queues:
+
+```ts
+await app.register(glideMQPlugin, {
+  connection: { addresses: [{ host: 'localhost', port: 6379 }] },
+  queues: {
+    emails: { processor: processEmail, concurrency: 5 },
+  },
+  producers: {
+    notifications: {},
+    analytics: { compression: 'gzip' },
+  },
+});
+
+await app.register(glideMQRoutes, { prefix: '/api/queues' });
+```
+
+Enqueue a job via the `/produce` endpoint:
+
+```bash
+curl -X POST http://localhost:3000/api/queues/notifications/produce \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "push", "data": {"userId": "abc123", "message": "Hello"}}'
+# → {"id": "1"}
+```
+
+The response returns only the job ID (a string), matching the lightweight nature of `Producer`.
+
+You can also access producers directly in your own routes:
+
+```ts
+app.post('/track', async (request, reply) => {
+  const producer = app.glidemq.getProducer('analytics');
+  const id = await producer.add('pageview', request.body);
+  return reply.send({ id });
+});
+```
+
 ### SSE Events
 
 The events endpoint streams real-time updates. Available event types: `completed`, `failed`, `progress`, `active`, `waiting`, `stalled`, and `heartbeat`.
@@ -170,6 +220,7 @@ import type {
   GlideMQRoutesOptions,  // Routes plugin options
   GlideMQConfig,         // Full configuration
   QueueConfig,           // Per-queue config (processor, concurrency)
+  ProducerConfig,        // Per-producer config (compression, serializer)
   QueueRegistry,         // Registry interface (for custom implementations)
   ManagedQueue,          // { queue, worker } pair returned by registry.get()
   JobResponse,           // Serialized job shape returned by API
