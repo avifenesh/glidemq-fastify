@@ -6,7 +6,7 @@
 
 Fastify plugin for [glide-mq](https://github.com/avifenesh/glide-mq) — mount a full queue management REST API and real-time SSE event stream with two plugin registrations.
 
-Declare your queues in config, register the plugins, and get 11 REST endpoints + live SSE — no boilerplate. Uses Fastify's decorator and lifecycle patterns.
+Declare your queues in config, register the plugins, and get a comprehensive REST API + live SSE — no boilerplate. Uses Fastify's decorator and lifecycle patterns.
 
 Part of the **glide-mq** ecosystem:
 
@@ -77,6 +77,7 @@ interface QueueConfig {
   processor?: (job: Job) => Promise<any>; // Omit for producer-only
   concurrency?: number;                   // Default: 1
   workerOpts?: Record<string, unknown>;
+  serializer?: (job: Job) => Record<string, unknown>; // Custom job serializer
 }
 
 interface ProducerConfig {
@@ -105,12 +106,24 @@ interface GlideMQRoutesOptions {
 
 ### REST Endpoints
 
+#### Jobs
+
 | Method | Route | Description |
 |--------|-------|-------------|
 | POST | `/:name/jobs` | Add a job |
-| GET | `/:name/jobs` | List jobs (query: `type`, `start`, `end`) |
+| POST | `/:name/jobs/wait` | Add a job and wait for result |
+| GET | `/:name/jobs` | List jobs (query: `type`, `start`, `end`, `excludeData`) |
 | GET | `/:name/jobs/:id` | Get a single job |
+| POST | `/:name/jobs/:id/priority` | Change job priority |
+| POST | `/:name/jobs/:id/delay` | Change job delay |
+| POST | `/:name/jobs/:id/promote` | Promote a delayed job |
+
+#### Queue Operations
+
+| Method | Route | Description |
+|--------|-------|-------------|
 | GET | `/:name/counts` | Get job counts by state |
+| GET | `/:name/metrics` | Get queue metrics (query: `type`, `start`, `end`) |
 | POST | `/:name/pause` | Pause queue |
 | POST | `/:name/resume` | Resume queue |
 | POST | `/:name/drain` | Drain waiting jobs |
@@ -120,12 +133,94 @@ interface GlideMQRoutesOptions {
 | GET | `/:name/events` | SSE event stream |
 | POST | `/:name/produce` | Add a job via Producer (lightweight, serverless) |
 
+#### Schedulers
+
+| Method | Route | Description |
+|--------|-------|-------------|
+| GET | `/:name/schedulers` | List all schedulers |
+| GET | `/:name/schedulers/:schedulerName` | Get a single scheduler |
+| PUT | `/:name/schedulers/:schedulerName` | Upsert a scheduler |
+| DELETE | `/:name/schedulers/:schedulerName` | Remove a scheduler |
+
 ### Adding Jobs
 
 ```bash
 curl -X POST http://localhost:3000/api/queues/emails/jobs \
   -H 'Content-Type: application/json' \
   -d '{"name": "welcome", "data": {"to": "user@example.com"}, "opts": {"priority": 10}}'
+```
+
+#### Advanced Job Options
+
+The `opts` object supports the full range of glide-mq job options:
+
+```json
+{
+  "name": "process",
+  "data": { "key": "value" },
+  "opts": {
+    "delay": 5000,
+    "priority": 10,
+    "attempts": 3,
+    "timeout": 30000,
+    "jobId": "custom-id-123",
+    "lifo": true,
+    "ttl": 60000,
+    "cost": 5,
+    "backoff": { "type": "exponential", "delay": 1000, "jitter": 200 },
+    "deduplication": { "id": "dedup-key", "ttl": 5000, "mode": "throttle" },
+    "ordering": { "key": "user-123", "concurrency": 1 },
+    "parent": { "queue": "parent-queue", "id": "parent-job-id" },
+    "removeOnComplete": true,
+    "removeOnFail": false
+  }
+}
+```
+
+### Add and Wait
+
+Submit a job and wait for its result synchronously:
+
+```bash
+curl -X POST http://localhost:3000/api/queues/emails/jobs/wait \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "send", "data": {"to": "user@example.com"}, "waitTimeout": 30000}'
+```
+
+Returns `{ "returnvalue": ... }` with the job's return value.
+
+### Job Mutations
+
+```bash
+# Change job priority
+curl -X POST http://localhost:3000/api/queues/emails/jobs/123/priority \
+  -H 'Content-Type: application/json' \
+  -d '{"priority": 1}'
+
+# Change job delay
+curl -X POST http://localhost:3000/api/queues/emails/jobs/123/delay \
+  -H 'Content-Type: application/json' \
+  -d '{"delay": 60000}'
+
+# Promote a delayed job to waiting
+curl -X POST http://localhost:3000/api/queues/emails/jobs/123/promote
+```
+
+### Queue Metrics
+
+```bash
+# Get completed metrics
+curl 'http://localhost:3000/api/queues/emails/metrics?type=completed&start=0&end=-1'
+
+# Get failed metrics
+curl 'http://localhost:3000/api/queues/emails/metrics?type=failed'
+```
+
+### Listing Jobs with excludeData
+
+```bash
+# List jobs without data field (lighter response)
+curl 'http://localhost:3000/api/queues/emails/jobs?type=completed&excludeData=true'
 ```
 
 ### Retrying Failed Jobs
@@ -192,6 +287,44 @@ app.post('/track', async (request, reply) => {
 });
 ```
 
+### Schedulers
+
+```bash
+# List all schedulers
+curl http://localhost:3000/api/queues/emails/schedulers
+
+# Get a specific scheduler
+curl http://localhost:3000/api/queues/emails/schedulers/daily-report
+
+# Upsert a scheduler (cron pattern)
+curl -X PUT http://localhost:3000/api/queues/emails/schedulers/daily-report \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "schedule": { "pattern": "0 9 * * *", "tz": "America/New_York" },
+    "template": { "name": "report", "data": {"type": "daily"} }
+  }'
+
+# Upsert a scheduler (interval)
+curl -X PUT http://localhost:3000/api/queues/emails/schedulers/heartbeat \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "schedule": { "every": 60000 },
+    "template": { "name": "ping" }
+  }'
+
+# Upsert a scheduler (repeat after complete)
+curl -X PUT http://localhost:3000/api/queues/emails/schedulers/sequential \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "schedule": { "every": 5000, "repeatAfterComplete": true },
+    "template": { "name": "sequential-task" }
+  }'
+
+# Remove a scheduler
+curl -X DELETE http://localhost:3000/api/queues/emails/schedulers/daily-report
+```
+
+
 ### SSE Events
 
 The events endpoint streams real-time updates. Available event types: `completed`, `failed`, `progress`, `active`, `waiting`, `stalled`, and `heartbeat`.
@@ -219,7 +352,7 @@ import type {
   GlideMQPluginOptions,  // Core plugin options
   GlideMQRoutesOptions,  // Routes plugin options
   GlideMQConfig,         // Full configuration
-  QueueConfig,           // Per-queue config (processor, concurrency)
+  QueueConfig,           // Per-queue config (processor, concurrency, serializer)
   ProducerConfig,        // Per-producer config (compression, serializer)
   QueueRegistry,         // Registry interface (for custom implementations)
   ManagedQueue,          // { queue, worker } pair returned by registry.get()

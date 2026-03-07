@@ -6,6 +6,7 @@ export interface QueueConfig<D = any, R = any> {
   processor?: (job: Job<D, R>) => Promise<R>;
   concurrency?: number;
   workerOpts?: Record<string, unknown>;
+  serializer?: (job: Job<D, R>) => Record<string, unknown>;
 }
 
 export interface ProducerConfig {
@@ -64,6 +65,11 @@ export interface JobResponse {
   timestamp: number;
   finishedOn: number | undefined;
   processedOn: number | undefined;
+  parentId?: string;
+  parentQueue?: string;
+  orderingKey?: string;
+  cost?: number;
+  schedulerName?: string;
 }
 
 export interface JobCountsResponse {
