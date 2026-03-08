@@ -5,6 +5,8 @@
 
 REST API and real-time SSE for [glide-mq](https://github.com/avifenesh/glide-mq) job queues, as a Fastify v5 plugin. Two registrations -- declare queues, get 21 endpoints.
 
+> If glide-mq is useful to you, consider [giving it a star](https://github.com/avifenesh/glide-mq). It helps others discover the project.
+
 ## Install
 
 ```bash
