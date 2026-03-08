@@ -19,6 +19,8 @@ Optional -- install `zod` for request validation (falls back to manual checks ot
 npm install zod
 ```
 
+Requires **glide-mq 0.9+**.
+
 ## Quick Start
 
 ```ts
