@@ -2,11 +2,13 @@
 
 [![npm](https://img.shields.io/npm/v/@glidemq/fastify)](https://www.npmjs.com/package/@glidemq/fastify)
 [![license](https://img.shields.io/npm/l/@glidemq/fastify)](https://github.com/avifenesh/glidemq-fastify/blob/main/LICENSE)
+[![docs](https://img.shields.io/badge/docs-glide--mq.dev-6366f1)](https://avifenesh.github.io/glide-mq.dev/)
 
 REST API and real-time SSE for [glide-mq](https://github.com/avifenesh/glide-mq) job queues, as a Fastify v5 plugin. Two registrations -- declare queues, get 21 endpoints.
 
 > If glide-mq is useful to you, consider [giving it a star](https://github.com/avifenesh/glide-mq). It helps others discover the project.
 
+**[Full documentation](https://avifenesh.github.io/glide-mq.dev/integrations/fastify)** | **[Core docs](https://avifenesh.github.io/glide-mq.dev/guide/getting-started)**
 ## Install
 
 ```bash
