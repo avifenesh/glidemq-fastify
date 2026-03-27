@@ -130,7 +130,7 @@ async function handleLiveSSE(
   let running = true;
   const ac = new AbortController();
 
-  const eventTypes = ['completed', 'failed', 'progress', 'stalled', 'active', 'waiting'];
+  const eventTypes = ['completed', 'failed', 'progress', 'stalled', 'active', 'waiting', 'usage', 'suspended', 'budget-exceeded'];
   const listeners: Array<{ event: string; handler: (...args: any[]) => void }> = [];
 
   for (const eventType of eventTypes) {

@@ -527,6 +527,84 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
   });
 
 
+  // --- AI-native endpoints ---
+
+  // GET /:name/flows/:id/usage - Aggregate AI usage for a flow
+  fastify.get<{ Params: { name: string; id: string } }>('/:name/flows/:id/usage', async (request, reply) => {
+    const { name, id } = request.params;
+    const registry = getRegistry();
+    const { queue } = registry.get(name);
+
+    const usage = await (queue as any).getFlowUsage(id);
+    return reply.send(usage);
+  });
+
+  // GET /:name/flows/:id/budget - Get budget state for a flow
+  fastify.get<{ Params: { name: string; id: string } }>('/:name/flows/:id/budget', async (request, reply) => {
+    const { name, id } = request.params;
+    const registry = getRegistry();
+    const { queue } = registry.get(name);
+
+    const budget = await (queue as any).getFlowBudget(id);
+    if (!budget) {
+      return reply.code(404).send({ error: 'No budget set for this flow' });
+    }
+    return reply.send(budget);
+  });
+
+  // GET /:name/jobs/:id/stream - SSE stream for a job's streaming channel
+  fastify.get<{ Params: { name: string; id: string }; Querystring: { lastId?: string } }>(
+    '/:name/jobs/:id/stream',
+    async (request, reply) => {
+      const { name, id: jobId } = request.params;
+      const registry = getRegistry();
+      const { queue } = registry.get(name);
+
+      reply.hijack();
+
+      reply.raw.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+      });
+
+      let lastId = (request.headers['last-event-id'] as string) || (request.query.lastId as string) || undefined;
+      let closed = false;
+
+      request.raw.on('close', () => {
+        closed = true;
+      });
+
+      try {
+        while (!closed) {
+          const entries = await (queue as any).readStream(jobId, { lastId, count: 100 });
+          for (const entry of entries) {
+            reply.raw.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry.fields)}\n\n`);
+            lastId = entry.id;
+          }
+
+          const job = await queue.getJob(jobId);
+          if (!job) break;
+          const state = await (job as any).getState();
+          if (state === 'completed' || state === 'failed') {
+            const trailing = await (queue as any).readStream(jobId, { lastId, count: 100 });
+            for (const entry of trailing) {
+              reply.raw.write(`id: ${entry.id}\ndata: ${JSON.stringify(entry.fields)}\n\n`);
+            }
+            break;
+          }
+
+          await new Promise<void>((r) => setTimeout(r, 500));
+        }
+      } catch {
+        // Connection lost or queue error - end gracefully
+      }
+
+      if (!reply.raw.writableEnded) {
+        reply.raw.end();
+      }
+    },
+  );
+
   // GET /:name/events - SSE stream
   createEventsRoute(fastify);
 };

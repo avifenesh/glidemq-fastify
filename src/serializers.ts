@@ -21,6 +21,11 @@ export function serializeJob(job: Job): JobResponse {
   if ((job as any).orderingKey != null) result.orderingKey = (job as any).orderingKey;
   if ((job as any).cost != null) result.cost = (job as any).cost;
   if ((job as any).schedulerName != null) result.schedulerName = (job as any).schedulerName;
+  if ((job as any).usage) result.usage = (job as any).usage;
+  if ((job as any).signals?.length) result.signals = (job as any).signals;
+  if ((job as any).budgetKey) result.budgetKey = (job as any).budgetKey;
+  if ((job as any).fallbackIndex) result.fallbackIndex = (job as any).fallbackIndex;
+  if ((job as any).tpmTokens != null) result.tpmTokens = (job as any).tpmTokens;
 
   return result;
 }
