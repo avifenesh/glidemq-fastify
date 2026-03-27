@@ -21,7 +21,7 @@ Optional -- install `zod` for request validation (falls back to manual checks ot
 npm install zod
 ```
 
-Requires **glide-mq 0.9+**.
+Requires **glide-mq 0.13+**.
 
 ## Quick Start
 
@@ -200,6 +200,18 @@ app.post('/send-email', async (request, reply) => {
 
 The registry exposes `get(name)`, `getProducer(name)`, `has(name)`, `names()`, `closeAll()`, and more. See the `QueueRegistry` interface in `src/types.ts`.
 
+## AI-native features (glide-mq 0.13+)
+
+glide-mq 0.13 introduces AI-native orchestration primitives. All of these are accessible through the Fastify plugin via direct registry access or through the REST API:
+
+- **Token/cost tracking** -- `reportUsage()` and `getFlowUsage()` for per-job and per-flow token and cost accounting
+- **Real-time streaming** -- `job.stream()`, `readStream()`, and SSE for streaming LLM output to clients
+- **Human-in-the-loop** -- `suspend()` and `signal()` for pausing jobs pending human approval
+- **Model failover** -- fallback chains for ordered model/provider alternatives on failure
+- **Budget caps** -- flow-level token and cost limits via budget middleware
+- **Rate limiting** -- dual-axis RPM + TPM rate limiting for LLM API compliance
+- **Vector search** -- `createJobIndex()` and `vectorSearch()` for semantic search over jobs
+
 ## Limitations
 
 - SSE uses `reply.hijack()` to bypass Fastify's response pipeline. This means Fastify hooks like `onSend` do not run for SSE connections.
@@ -211,7 +223,7 @@ The registry exposes `get(name)`, `getProducer(name)`, `has(name)`, `names()`, `
 
 | Package | Purpose |
 |---------|---------|
-| [glide-mq](https://github.com/avifenesh/glide-mq) | Core queue library -- producers, workers, schedulers, workflows |
+| [glide-mq](https://github.com/avifenesh/glide-mq) | AI-native queue library -- orchestration, streaming, failover, budget caps |
 | **@glidemq/fastify** | Fastify REST API + SSE plugin (this package) |
 | [@glidemq/hono](https://github.com/avifenesh/glidemq-hono) | Hono REST API + SSE middleware |
 | [@glidemq/hapi](https://github.com/avifenesh/glidemq-hapi) | Hapi REST API + SSE plugin |
