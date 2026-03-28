@@ -122,7 +122,7 @@ await app.close();
 ## Links
 
 - [glide-mq](https://github.com/avifenesh/glide-mq) - core library
-- [Full documentation](https://avifenesh.github.io/glide-mq.dev/integrations/fastify)
+- [Full documentation](https://avifenesh.github.io/glidemq.dev/integrations/fastify)
 - [Issues](https://github.com/avifenesh/glidemq-fastify/issues)
 - [@glidemq/hono](https://github.com/avifenesh/glidemq-hono) | [@glidemq/hapi](https://github.com/avifenesh/glidemq-hapi) | [@glidemq/nestjs](https://github.com/avifenesh/glidemq-nestjs) | [@glidemq/dashboard](https://github.com/avifenesh/glidemq-dashboard)
 

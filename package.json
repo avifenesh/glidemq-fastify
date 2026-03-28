@@ -48,7 +48,7 @@
   "bugs": {
     "url": "https://github.com/avifenesh/glidemq-fastify/issues"
   },
-  "homepage": "https://avifenesh.github.io/glide-mq.dev/integrations/fastify",
+  "homepage": "https://avifenesh.github.io/glidemq.dev/integrations/fastify",
   "sideEffects": false,
   "dependencies": {
     "fastify-plugin": "^5.0.0"
