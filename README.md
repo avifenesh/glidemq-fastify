@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/@glidemq/fastify)](https://www.npmjs.com/package/@glidemq/fastify)
 [![license](https://img.shields.io/npm/l/@glidemq/fastify)](https://github.com/avifenesh/glidemq-fastify/blob/main/LICENSE)
 
-Fastify v5 plugin that turns [glide-mq](https://github.com/avifenesh/glide-mq) queues into a REST API with real-time SSE. Two registrations give you queue operations, schedulers, AI telemetry, rolling usage summaries, and broadcast routes.
+Fastify v5 plugin that turns [glide-mq](https://github.com/avifenesh/glide-mq) queues into a REST API with real-time SSE. Two registrations give you queue operations, schedulers, flow orchestration over HTTP, rolling usage summaries, and broadcast routes.
 
 ## Why
 
@@ -50,16 +50,21 @@ await app.listen({ port: 3000 });
 
 ## AI-native endpoints
 
-glide-mq 0.14+ provides AI orchestration primitives - token/cost tracking, real-time streaming, human-in-the-loop suspend/signal, model failover chains, budget caps, dual-axis rate limiting, and vector search. This plugin exposes three dedicated AI endpoints:
+glide-mq 0.14+ provides AI orchestration primitives - token/cost tracking, real-time streaming, human-in-the-loop suspend/signal, model failover chains, budget caps, dual-axis rate limiting, and vector search. This plugin exposes dedicated AI and flow endpoints:
 
 - **`GET /:name/flows/:id/usage`** - aggregate token counts, costs, and model usage across a flow (parent + children)
 - **`GET /:name/flows/:id/budget`** - read budget state for a flow (caps, used amounts, exceeded status)
+- **`POST /flows`** - create a tree flow or DAG over HTTP with `{ flow, budget? }` or `{ dag }`
+- **`GET /flows/:id`** - inspect a flow snapshot with nodes, roots, counts, usage, and budget
+- **`GET /flows/:id/tree`** - inspect the nested tree view for a submitted tree flow or DAG
+- **`DELETE /flows/:id`** - revoke or flag remaining jobs in a flow and delete the HTTP flow record
 - **`GET /:name/jobs/:id/stream`** - SSE stream of a job's streaming channel (supports `lastId` query param and `Last-Event-ID` header for resumption)
 - **`GET /usage/summary`** - rolling per-queue or cross-queue usage summary from persisted minute buckets
 - **`POST /broadcast/:name`** - publish a broadcast message with a `subject`, payload, and optional job options
 - **`GET /broadcast/:name/events`** - SSE stream for broadcast delivery; requires `subscription` and optionally filters `subjects`
 
 All other AI primitives (usage metadata on jobs, signals, budget keys, fallback index, TPM tokens) are included in job serialization automatically.
+HTTP-submitted budgets are currently supported for tree flows only, not DAG payloads.
 
 ```ts
 // Get aggregated usage for a flow
@@ -120,7 +125,7 @@ await app.close();
 
 - SSE uses `reply.hijack()`, so Fastify `onSend` hooks do not run for SSE connections.
 - No built-in auth or rate limiting. Use `@fastify/auth` or `@fastify/rate-limit` in front of `glideMQRoutes`.
-- `GET /usage/summary` and broadcast routes require a live `connection`; they are unavailable in testing mode.
+- `/flows*`, `GET /usage/summary`, and broadcast routes require a live `connection`; they are unavailable in testing mode.
 - Queue names must match `/^[a-zA-Z0-9_-]{1,128}$/`.
 
 ## Links
