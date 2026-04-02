@@ -1,6 +1,6 @@
 {
   "name": "@glidemq/fastify",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Fastify plugin for glide-mq - queue management REST API and SSE events",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,7 +17,8 @@
   "files": [
     "dist",
     "LICENSE",
-    "README.md"
+    "README.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "build": "tsc",
@@ -54,7 +55,7 @@
     "fastify-plugin": "^5.0.0"
   },
   "peerDependencies": {
-    "glide-mq": ">=0.14.0",
+    "glide-mq": ">=0.15.0",
     "fastify": ">=5.0.0",
     "zod": ">=3.0.0"
   },

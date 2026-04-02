@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Expand the Fastify proxy surface to track glide-mq 0.15.0: queue-wide events SSE, per-job lifecycle SSE, `jobs/wait`, workers, metrics, scheduler CRUD, usage summary, broadcast publish/SSE, DLQ inspection/replay, suspended-job inspection, revoke, and queue global rate-limit management.
+- Add flow HTTP routes for `POST /flows`, `GET /flows/:id`, `GET /flows/:id/tree`, and `DELETE /flows/:id`.
+- Require glide-mq >=0.15.0 for the new flow and proxy-parity endpoints.
+
 ## 0.1.0
 
 Initial release.
