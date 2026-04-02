@@ -3,7 +3,7 @@
 [![npm](https://img.shields.io/npm/v/@glidemq/fastify)](https://www.npmjs.com/package/@glidemq/fastify)
 [![license](https://img.shields.io/npm/l/@glidemq/fastify)](https://github.com/avifenesh/glidemq-fastify/blob/main/LICENSE)
 
-Fastify v5 plugin that turns [glide-mq](https://github.com/avifenesh/glide-mq) queues into a REST API with real-time SSE - two registrations, 24 endpoints. Includes AI-native endpoints for token/cost tracking, budget monitoring, and streaming.
+Fastify v5 plugin that turns [glide-mq](https://github.com/avifenesh/glide-mq) queues into a REST API with real-time SSE. Two registrations give you queue operations, schedulers, AI telemetry, rolling usage summaries, and broadcast routes.
 
 ## Why
 
@@ -46,7 +46,7 @@ await app.register(glideMQRoutes, { prefix: "/api/queues" });
 await app.listen({ port: 3000 });
 ```
 
-`glideMQPlugin` creates a registry on `app.glidemq`. `glideMQRoutes` mounts 24 endpoints. The `onClose` hook handles graceful shutdown.
+`glideMQPlugin` creates a registry on `app.glidemq`. `glideMQRoutes` mounts the full queue-management API. The `onClose` hook handles graceful shutdown.
 
 ## AI-native endpoints
 
@@ -55,6 +55,9 @@ glide-mq 0.14+ provides AI orchestration primitives - token/cost tracking, real-
 - **`GET /:name/flows/:id/usage`** - aggregate token counts, costs, and model usage across a flow (parent + children)
 - **`GET /:name/flows/:id/budget`** - read budget state for a flow (caps, used amounts, exceeded status)
 - **`GET /:name/jobs/:id/stream`** - SSE stream of a job's streaming channel (supports `lastId` query param and `Last-Event-ID` header for resumption)
+- **`GET /usage/summary`** - rolling per-queue or cross-queue usage summary from persisted minute buckets
+- **`POST /broadcast/:name`** - publish a broadcast message with a `subject`, payload, and optional job options
+- **`GET /broadcast/:name/events`** - SSE stream for broadcast delivery; requires `subscription` and optionally filters `subjects`
 
 All other AI primitives (usage metadata on jobs, signals, budget keys, fallback index, TPM tokens) are included in job serialization automatically.
 
@@ -89,7 +92,7 @@ Route access control via `GlideMQRoutesOptions`:
 ```ts
 await app.register(glideMQRoutes, {
   prefix: "/api/queues",
-  queues: ["emails"],    // restrict to specific queues
+  queues: ["emails"],    // restrict queue and broadcast names
   producers: ["emails"], // restrict to specific producers
 });
 ```
@@ -117,12 +120,13 @@ await app.close();
 
 - SSE uses `reply.hijack()`, so Fastify `onSend` hooks do not run for SSE connections.
 - No built-in auth or rate limiting. Use `@fastify/auth` or `@fastify/rate-limit` in front of `glideMQRoutes`.
+- `GET /usage/summary` and broadcast routes require a live `connection`; they are unavailable in testing mode.
 - Queue names must match `/^[a-zA-Z0-9_-]{1,128}$/`.
 
 ## Links
 
 - [glide-mq](https://github.com/avifenesh/glide-mq) - core library
-- [Full documentation](https://avifenesh.github.io/glidemq.dev/integrations/fastify)
+- [Full documentation](https://glidemq.dev/integrations/fastify)
 - [Issues](https://github.com/avifenesh/glidemq-fastify/issues)
 - [@glidemq/hono](https://github.com/avifenesh/glidemq-hono) | [@glidemq/hapi](https://github.com/avifenesh/glidemq-hapi) | [@glidemq/nestjs](https://github.com/avifenesh/glidemq-nestjs) | [@glidemq/dashboard](https://github.com/avifenesh/glidemq-dashboard)
 

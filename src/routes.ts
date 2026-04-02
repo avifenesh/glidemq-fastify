@@ -1,4 +1,5 @@
 import type { FastifyPluginAsync } from 'fastify';
+import type { ServerResponse } from 'node:http';
 import type { GlideMQRoutesOptions, QueueRegistry } from './types';
 import { serializeJob, serializeJobs } from './serializers';
 import { buildSchemas, hasZod } from './schemas';
@@ -9,11 +10,26 @@ const VALID_JOB_TYPES = ['waiting', 'active', 'delayed', 'completed', 'failed'] 
 const VALID_CLEAN_TYPES = ['completed', 'failed'] as const;
 const VALID_METRICS_TYPES = ['completed', 'failed'] as const;
 const VALID_SCHEDULER_NAME = /^[a-zA-Z0-9_:.-]{1,256}$/;
+const SSE_BLOCK_MS = 5_000;
+const SSE_HEARTBEAT_MS = 15_000;
 
 const ALLOWED_OPTS = [
   'delay', 'priority', 'attempts', 'timeout', 'removeOnComplete', 'removeOnFail',
   'jobId', 'lifo', 'deduplication', 'ordering', 'cost', 'backoff', 'parent', 'ttl',
 ];
+
+type BroadcastClient = {
+  matcher: ((subject: string) => boolean) | null;
+  reply: ServerResponse;
+};
+
+type SharedBroadcastStream = {
+  clients: Set<BroadcastClient>;
+  closing: boolean;
+  ready: Promise<void>;
+  worker: { close: () => Promise<void> };
+  close: () => Promise<void>;
+};
 
 function pickOpts(rawOpts: Record<string, unknown>): Record<string, unknown> {
   const safeOpts: Record<string, unknown> = {};
@@ -23,6 +39,41 @@ function pickOpts(rawOpts: Record<string, unknown>): Record<string, unknown> {
   return safeOpts;
 }
 
+function parseIntegerQuery(raw: string | undefined, name: string, opts?: { min?: number }): number | undefined {
+  if (raw == null) return undefined;
+  if (!/^-?\d+$/.test(raw)) {
+    throw new Error(`${name} must be an integer`);
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    throw new Error(`${name} must be an integer`);
+  }
+  if (opts?.min != null && value < opts.min) {
+    throw new Error(`${name} must be >= ${opts.min}`);
+  }
+  return value;
+}
+
+function parseCsvQuery(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const values = raw
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  return values.length > 0 ? values : undefined;
+}
+
+function writeSSEChunk(reply: ServerResponse, event: string, data: string, id?: string): boolean {
+  try {
+    if (id != null) reply.write(`id: ${id}\n`);
+    reply.write(`event: ${event}\n`);
+    reply.write(`data: ${data}\n\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fastify, options) => {
   if (!fastify.hasDecorator('glidemq')) {
     throw new Error('glideMQPlugin must be registered before glideMQRoutes');
@@ -30,9 +81,106 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
   const allowedQueues = options?.queues;
   const allowedProducers = options?.producers;
   const schemas = hasZod() ? buildSchemas() : null;
+  const broadcastStreams = new Map<string, SharedBroadcastStream>();
 
   function getRegistry(): QueueRegistry {
     return fastify.glidemq;
+  }
+
+  function getLiveConnection(feature: string) {
+    const connection = getRegistry().getConnection();
+    if (!connection) {
+      throw new Error(`Connection config required for ${feature}`);
+    }
+    return connection;
+  }
+
+  function removeBroadcastClient(shared: SharedBroadcastStream, client: BroadcastClient): void {
+    if (!shared.clients.delete(client)) return;
+    if (shared.clients.size === 0) {
+      void shared.close();
+    }
+    try {
+      if (!client.reply.writableEnded) {
+        client.reply.end();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  async function getSharedBroadcastStream(name: string, subscription: string): Promise<SharedBroadcastStream> {
+    const prefix = getRegistry().getPrefix();
+    const cacheKey = `${prefix ?? ''}\u0000${name}\u0000${subscription}`;
+    const cached = broadcastStreams.get(cacheKey);
+    if (cached) {
+      await cached.ready;
+      return cached;
+    }
+
+    const connection = getLiveConnection('broadcast SSE');
+    const { BroadcastWorker } = require('glide-mq') as typeof import('glide-mq');
+    const clients = new Set<BroadcastClient>();
+
+    const shared: SharedBroadcastStream = {
+      clients,
+      closing: false,
+      ready: Promise.resolve(),
+      worker: null as unknown as { close: () => Promise<void> },
+      close: async () => {
+        if (shared.closing) return;
+        shared.closing = true;
+        broadcastStreams.delete(cacheKey);
+        for (const client of Array.from(clients)) {
+          try {
+            if (!client.reply.writableEnded) {
+              client.reply.end();
+            }
+          } catch {
+            // ignore
+          }
+        }
+        clients.clear();
+        await shared.worker.close();
+      },
+    };
+
+    const worker = new BroadcastWorker(
+      name,
+      async (job) => {
+        const payload = JSON.stringify({
+          data: job.data,
+          id: job.id,
+          subject: job.name,
+          timestamp: job.timestamp,
+        });
+        for (const client of Array.from(shared.clients)) {
+          if (client.matcher && !client.matcher(job.name)) continue;
+          if (!writeSSEChunk(client.reply, 'message', payload, job.id)) {
+            removeBroadcastClient(shared, client);
+          }
+        }
+      },
+      {
+        blockTimeout: SSE_BLOCK_MS,
+        connection,
+        prefix,
+        subscription,
+      },
+    );
+
+    shared.worker = worker;
+    shared.ready = worker.waitUntilReady();
+    broadcastStreams.set(cacheKey, shared);
+
+    try {
+      await shared.ready;
+      return shared;
+    } catch (error) {
+      broadcastStreams.delete(cacheKey);
+      await worker.close().catch(() => undefined);
+      throw error;
+    }
   }
 
   // Queue name validation + access control
@@ -46,6 +194,12 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
 
     // Allow produce endpoint to pass through for producer-only names
     const url = request.url;
+    if (url.includes('/broadcast/')) {
+      if (allowedQueues && !allowedQueues.includes(name)) {
+        return reply.code(404).send({ error: 'Queue not found or not accessible' });
+      }
+      return;
+    }
     if (url.endsWith('/produce')) {
       const registry = getRegistry();
       if ((allowedProducers && !allowedProducers.includes(name)) || !registry.hasProducer(name)) {
@@ -65,6 +219,57 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
     fastify.log.error(error);
     return reply.code(500).send({ error: 'Internal server error' });
   });
+
+  fastify.addHook('onClose', async () => {
+    for (const shared of Array.from(broadcastStreams.values())) {
+      await shared.close().catch(() => undefined);
+    }
+    broadcastStreams.clear();
+  });
+
+  fastify.get<{ Querystring: { queues?: string; start?: string; end?: string; window?: string; windowMs?: string } }>(
+    '/usage/summary',
+    async (request, reply) => {
+      try {
+        const requestedQueues = parseCsvQuery(request.query.queues);
+        if (requestedQueues) {
+          for (const queueName of requestedQueues) {
+            if (!VALID_QUEUE_NAME.test(queueName)) {
+              return reply.code(400).send({ error: 'Invalid queue name' });
+            }
+            if (allowedQueues && !allowedQueues.includes(queueName)) {
+              return reply.code(404).send({ error: 'Queue not found or not accessible' });
+            }
+          }
+        }
+
+        const window = request.query.window;
+        const windowMs = request.query.windowMs;
+        if (window && windowMs && window !== windowMs) {
+          return reply.code(400).send({ error: 'window and windowMs must match when both are provided' });
+        }
+
+        const { Queue } = require('glide-mq') as typeof import('glide-mq');
+        const summary = await Queue.getUsageSummary({
+          connection: getLiveConnection('usage summary'),
+          endTime: parseIntegerQuery(request.query.end, 'end', { min: 0 }),
+          prefix: getRegistry().getPrefix(),
+          queues: requestedQueues ?? allowedQueues,
+          startTime: parseIntegerQuery(request.query.start, 'start', { min: 0 }),
+          windowMs: parseIntegerQuery(windowMs ?? window, windowMs ? 'windowMs' : 'window', { min: 1 }),
+        });
+
+        return reply.send(summary);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Internal server error';
+        const statusCode =
+          message.includes('must be') || message.includes('window and windowMs')
+            ? 400
+            : 500;
+        return reply.code(statusCode).send({ error: message });
+      }
+    },
+  );
 
   // POST /:name/jobs - Add a job
   fastify.post<{ Params: { name: string } }>('/:name/jobs', async (request, reply) => {
@@ -607,4 +812,92 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
 
   // GET /:name/events - SSE stream
   createEventsRoute(fastify);
+
+  fastify.post<{ Params: { name: string } }>('/broadcast/:name', async (request, reply) => {
+    const { name } = request.params;
+
+    try {
+      const body = (request.body ?? {}) as { data?: unknown; opts?: Record<string, unknown>; subject?: unknown };
+      if (typeof body.subject !== 'string' || body.subject.trim() === '') {
+        return reply.code(400).send({ error: 'Validation failed', details: ['subject: Required'] });
+      }
+
+      const connection = getLiveConnection('broadcast publish');
+      const { Broadcast } = require('glide-mq') as typeof import('glide-mq');
+      const broadcast = new Broadcast(name, {
+        connection,
+        prefix: getRegistry().getPrefix(),
+      });
+
+      try {
+        const id = await broadcast.publish(body.subject, body.data ?? null, pickOpts(body.opts ?? {}) as any);
+        return reply.code(id ? 201 : 200).send(id ? { id, subject: body.subject } : { skipped: true });
+      } finally {
+        await broadcast.close().catch(() => undefined);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      return reply.code(500).send({ error: message });
+    }
+  });
+
+  fastify.get<{ Params: { name: string }; Querystring: { subscription?: string; subjects?: string } }>(
+    '/broadcast/:name/events',
+    async (request, reply) => {
+      const { name } = request.params;
+      const subscription = request.query.subscription;
+      if (!subscription) {
+        return reply.code(400).send({ error: 'Missing required query param: subscription' });
+      }
+
+      let shared: SharedBroadcastStream | undefined;
+      let client: BroadcastClient | undefined;
+      const { compileSubjectMatcher } = require('glide-mq') as typeof import('glide-mq');
+
+      try {
+        getLiveConnection('broadcast SSE');
+        shared = await getSharedBroadcastStream(name, subscription);
+
+        reply.hijack();
+        reply.raw.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+        });
+        reply.raw.write(':ok\n\n');
+
+        client = {
+          matcher: compileSubjectMatcher(parseCsvQuery(request.query.subjects)),
+          reply: reply.raw,
+        };
+        shared.clients.add(client);
+
+        request.raw.on('close', () => {
+          if (shared && client) {
+            removeBroadcastClient(shared, client);
+          }
+        });
+
+        while (!reply.raw.writableEnded) {
+          if (!writeSSEChunk(reply.raw, 'heartbeat', JSON.stringify({ time: Date.now() }))) {
+            break;
+          }
+          await new Promise<void>((resolve) => setTimeout(resolve, SSE_HEARTBEAT_MS));
+        }
+      } catch (error) {
+        if (client && shared) {
+          removeBroadcastClient(shared, client);
+        }
+        if (!reply.sent && !reply.raw.headersSent) {
+          const message = error instanceof Error ? error.message : 'Internal server error';
+          return reply.code(500).send({ error: message });
+        }
+      }
+
+      if (client && shared) {
+        removeBroadcastClient(shared, client);
+      } else if (!reply.raw.writableEnded) {
+        reply.raw.end();
+      }
+    },
+  );
 };

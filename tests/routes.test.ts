@@ -358,6 +358,48 @@ describe('glideMQRoutes', () => {
       expect(res.statusCode).toBe(400);
     });
   });
+
+  describe('GET /usage/summary', () => {
+    it('returns 500 in testing mode without a live connection', async () => {
+      const { app } = await setup();
+      const res = await app.inject({ method: 'GET', url: '/usage/summary' });
+      expect(res.statusCode).toBe(500);
+      expect(res.json().error).toContain('Connection config required');
+    });
+  });
+
+  describe('POST /broadcast/:name', () => {
+    it('returns 400 when subject is missing', async () => {
+      const { app } = await setup();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/broadcast/emails',
+        payload: { data: { ok: true } },
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe('Validation failed');
+    });
+
+    it('returns 500 in testing mode after validation passes', async () => {
+      const { app } = await setup();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/broadcast/emails',
+        payload: { subject: 'events.created', data: { ok: true } },
+      });
+      expect(res.statusCode).toBe(500);
+      expect(res.json().error).toContain('Connection config required');
+    });
+  });
+
+  describe('GET /broadcast/:name/events', () => {
+    it('returns 400 when subscription is missing', async () => {
+      const { app } = await setup();
+      const res = await app.inject({ method: 'GET', url: '/broadcast/emails/events' });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('subscription');
+    });
+  });
 });
 
 describe('glideMQRoutes with restricted queues', () => {
@@ -396,6 +438,18 @@ describe('glideMQRoutes with restricted queues', () => {
       method: 'POST',
       url: '/secret/jobs',
       payload: { name: 'test', data: {} },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('returns 404 for non-whitelisted broadcast publish', async () => {
+    const { app, registry } = await buildRestrictedApp(['emails']);
+    cleanup = () => app.close();
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/broadcast/secret',
+      payload: { subject: 'secret.created' },
     });
     expect(res.statusCode).toBe(404);
   });
