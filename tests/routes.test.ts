@@ -368,6 +368,39 @@ describe('glideMQRoutes', () => {
     });
   });
 
+  describe('flow HTTP endpoints', () => {
+    it('returns 400 when body does not include exactly one of flow or dag', async () => {
+      const { app } = await setup();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/flows',
+        payload: {},
+      });
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toContain('exactly one of');
+    });
+
+    it('returns 500 in testing mode when flow creation is attempted', async () => {
+      const { app } = await setup();
+      const res = await app.inject({
+        method: 'POST',
+        url: '/flows',
+        payload: {
+          flow: { name: 'root', queueName: 'emails', data: {}, children: [] },
+        },
+      });
+      expect(res.statusCode).toBe(500);
+      expect(res.json().error).toContain('Connection config required');
+    });
+
+    it('returns 500 in testing mode when reading a flow snapshot', async () => {
+      const { app } = await setup();
+      const res = await app.inject({ method: 'GET', url: '/flows/test-flow' });
+      expect(res.statusCode).toBe(500);
+      expect(res.json().error).toContain('Connection config required');
+    });
+  });
+
   describe('POST /broadcast/:name', () => {
     it('returns 400 when subject is missing', async () => {
       const { app } = await setup();

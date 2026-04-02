@@ -31,6 +31,43 @@ type SharedBroadcastStream = {
   close: () => Promise<void>;
 };
 
+type FlowKind = 'tree' | 'dag';
+
+type FlowDefinition = {
+  name: string;
+  queueName: string;
+  data: unknown;
+  opts?: Record<string, unknown>;
+  children?: FlowDefinition[];
+};
+
+type DagDefinition = {
+  nodes: Array<{
+    name: string;
+    queueName: string;
+    data: unknown;
+    opts?: Record<string, unknown>;
+    deps?: string[];
+  }>;
+};
+
+type FlowJobRef = {
+  jobId: string;
+  queueName: string;
+};
+
+type FlowNodeSummary = ReturnType<typeof serializeJob> & {
+  flowId: string;
+  queueName: string;
+  state: string;
+  parentIds?: string[];
+  parentQueues?: string[];
+};
+
+type FlowTreeNode = FlowNodeSummary & {
+  children: FlowTreeNode[];
+};
+
 function pickOpts(rawOpts: Record<string, unknown>): Record<string, unknown> {
   const safeOpts: Record<string, unknown> = {};
   for (const key of ALLOWED_OPTS) {
@@ -74,6 +111,128 @@ function writeSSEChunk(reply: ServerResponse, event: string, data: string, id?: 
   }
 }
 
+function flowMetaKey(flowId: string, prefix?: string): string {
+  return `${prefix ?? 'glide'}:flow:${flowId}:meta`;
+}
+
+function flowJobsKey(flowId: string, prefix?: string): string {
+  return `${prefix ?? 'glide'}:flow:${flowId}:jobs`;
+}
+
+function flowRootsKey(flowId: string, prefix?: string): string {
+  return `${prefix ?? 'glide'}:flow:${flowId}:roots`;
+}
+
+function encodeFlowJobRef(ref: FlowJobRef): string {
+  return `${ref.queueName}:${ref.jobId}`;
+}
+
+function decodeFlowJobRef(raw: string): FlowJobRef | null {
+  const separator = raw.indexOf(':');
+  if (separator <= 0 || separator === raw.length - 1) return null;
+  return { queueName: raw.slice(0, separator), jobId: raw.slice(separator + 1) };
+}
+
+function hashEntriesToRecord(hashData: any): Record<string, string> | null {
+  if (!Array.isArray(hashData) || hashData.length === 0) return null;
+  const record: Record<string, string> = Object.create(null);
+  for (const entry of hashData) {
+    const key = entry?.field ?? entry?.key;
+    if (key == null) continue;
+    record[String(key)] = String(entry.value);
+  }
+  return Object.keys(record).length > 0 ? record : null;
+}
+
+function collectFlowQueueNames(flow: FlowDefinition, acc: Set<string> = new Set()): Set<string> {
+  acc.add(flow.queueName);
+  for (const child of flow.children ?? []) {
+    collectFlowQueueNames(child, acc);
+  }
+  return acc;
+}
+
+function collectDagQueueNames(dag: DagDefinition): Set<string> {
+  const names = new Set<string>();
+  for (const node of dag.nodes) {
+    names.add(node.queueName);
+  }
+  return names;
+}
+
+function buildFlowTreeNodes(flowId: string, roots: FlowJobRef[], nodes: FlowNodeSummary[]): FlowTreeNode[] {
+  const nodeMap = new Map<string, FlowNodeSummary>();
+  const childrenByParent = new Map<string, FlowNodeSummary[]>();
+
+  for (const node of nodes) {
+    nodeMap.set(encodeFlowJobRef({ jobId: node.id, queueName: node.queueName }), node);
+
+    const parentRefs: FlowJobRef[] = [];
+    if (node.parentIds && node.parentQueues && node.parentIds.length === node.parentQueues.length) {
+      for (let i = 0; i < node.parentIds.length; i++) {
+        parentRefs.push({ jobId: node.parentIds[i], queueName: node.parentQueues[i] });
+      }
+    } else if (node.parentId) {
+      parentRefs.push({ jobId: node.parentId, queueName: node.queueName });
+    }
+
+    for (const parentRef of parentRefs) {
+      const key = encodeFlowJobRef(parentRef);
+      const siblings = childrenByParent.get(key);
+      if (siblings) siblings.push(node);
+      else childrenByParent.set(key, [node]);
+    }
+  }
+
+  function visit(ref: FlowJobRef, path: Set<string>): FlowTreeNode {
+    const key = encodeFlowJobRef(ref);
+    const node = nodeMap.get(key);
+    if (!node) {
+      return {
+        attemptsMade: 0,
+        children: [],
+        data: null,
+        failedReason: undefined,
+        finishedOn: undefined,
+        flowId,
+        id: ref.jobId,
+        name: '',
+        opts: {},
+        parentId: undefined,
+        parentIds: undefined,
+        parentQueue: undefined,
+        parentQueues: undefined,
+        processedOn: undefined,
+        progress: 0,
+        queueName: ref.queueName,
+        returnvalue: undefined,
+        state: 'missing',
+        timestamp: 0,
+      };
+    }
+
+    const children = (childrenByParent.get(key) ?? [])
+      .slice()
+      .sort((a, b) => a.timestamp - b.timestamp || a.queueName.localeCompare(b.queueName) || a.id.localeCompare(b.id))
+      .map((child) => {
+        const childKey = encodeFlowJobRef({ jobId: child.id, queueName: child.queueName });
+        if (path.has(childKey)) {
+          return { ...child, children: [] };
+        }
+        const nextPath = new Set(path);
+        nextPath.add(childKey);
+        return visit({ jobId: child.id, queueName: child.queueName }, nextPath);
+      });
+
+    return { ...node, children };
+  }
+
+  return roots
+    .slice()
+    .sort((a, b) => a.queueName.localeCompare(b.queueName) || a.jobId.localeCompare(b.jobId))
+    .map((root) => visit(root, new Set([encodeFlowJobRef(root)])));
+}
+
 export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fastify, options) => {
   if (!fastify.hasDecorator('glidemq')) {
     throw new Error('glideMQPlugin must be registered before glideMQRoutes');
@@ -87,12 +246,171 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
     return fastify.glidemq;
   }
 
+  function flowErrorStatus(message: string): number {
+    return message.includes('must be') ||
+      message.includes('window and windowMs') ||
+      message.includes('exactly one of') ||
+      message.includes('supported only for tree flows') ||
+      message.includes('Invalid queue name')
+      ? 400
+      : 500;
+  }
+
   function getLiveConnection(feature: string) {
     const connection = getRegistry().getConnection();
     if (!connection) {
       throw new Error(`Connection config required for ${feature}`);
     }
     return connection;
+  }
+
+  function getFlowClientQueueNames(registry: QueueRegistry): string[] {
+    const names = allowedQueues ?? registry.names();
+    return names.filter((name) => registry.has(name));
+  }
+
+  async function getFlowClient(registry: QueueRegistry): Promise<any> {
+    const queueNames = getFlowClientQueueNames(registry);
+    if (queueNames.length === 0) {
+      throw new Error('Flow HTTP endpoints require at least one configured queue');
+    }
+    const { queue } = registry.get(queueNames[0]);
+    const client = await (queue as any).getClient?.();
+    if (!client) {
+      throw new Error('Connection config required for flow HTTP endpoints');
+    }
+    return client;
+  }
+
+  function assertAllowedFlowQueues(registry: QueueRegistry, queueNames: Iterable<string>): void {
+    for (const queueName of queueNames) {
+      if (!VALID_QUEUE_NAME.test(queueName)) {
+        throw new Error('Invalid queue name');
+      }
+      if ((allowedQueues && !allowedQueues.includes(queueName)) || !registry.has(queueName)) {
+        throw new Error('Queue not found or not accessible');
+      }
+    }
+  }
+
+  async function registerFlowRecord(
+    registry: QueueRegistry,
+    flowId: string,
+    kind: FlowKind,
+    roots: FlowJobRef[],
+    jobs: FlowJobRef[],
+  ): Promise<void> {
+    const client = await getFlowClient(registry);
+    const prefix = registry.getPrefix();
+    await client.hset(flowMetaKey(flowId, prefix), { createdAt: Date.now().toString(), kind });
+    await client.del([flowJobsKey(flowId, prefix), flowRootsKey(flowId, prefix)]);
+
+    if (jobs.length > 0) {
+      await client.sadd(
+        flowJobsKey(flowId, prefix),
+        jobs
+          .slice()
+          .sort((a, b) => a.queueName.localeCompare(b.queueName) || a.jobId.localeCompare(b.jobId))
+          .map(encodeFlowJobRef),
+      );
+      for (const ref of jobs) {
+        const { queue } = registry.get(ref.queueName);
+        await client.hset((queue as any).keys.job(ref.jobId), { flowId });
+      }
+    }
+
+    if (roots.length > 0) {
+      await client.sadd(
+        flowRootsKey(flowId, prefix),
+        roots
+          .slice()
+          .sort((a, b) => a.queueName.localeCompare(b.queueName) || a.jobId.localeCompare(b.jobId))
+          .map(encodeFlowJobRef),
+      );
+    }
+  }
+
+  async function loadFlowRecord(
+    registry: QueueRegistry,
+    flowId: string,
+  ): Promise<{ createdAt: number; kind: FlowKind; jobs: FlowJobRef[]; roots: FlowJobRef[] } | null> {
+    const client = await getFlowClient(registry);
+    const prefix = registry.getPrefix();
+    const meta = hashEntriesToRecord(await client.hgetall(flowMetaKey(flowId, prefix)));
+    if (!meta?.kind) return null;
+
+    const jobs = Array.from((await client.smembers(flowJobsKey(flowId, prefix))) ?? [])
+      .map((entry) => decodeFlowJobRef(String(entry)))
+      .filter((entry): entry is FlowJobRef => entry !== null);
+    const roots = Array.from((await client.smembers(flowRootsKey(flowId, prefix))) ?? [])
+      .map((entry) => decodeFlowJobRef(String(entry)))
+      .filter((entry): entry is FlowJobRef => entry !== null);
+
+    return {
+      createdAt: Number(meta.createdAt || '0'),
+      kind: meta.kind === 'dag' ? 'dag' : 'tree',
+      jobs,
+      roots,
+    };
+  }
+
+  async function deleteFlowRecord(registry: QueueRegistry, flowId: string): Promise<void> {
+    const client = await getFlowClient(registry);
+    const prefix = registry.getPrefix();
+    await client.del([flowMetaKey(flowId, prefix), flowJobsKey(flowId, prefix), flowRootsKey(flowId, prefix)]);
+  }
+
+  async function buildFlowSnapshot(registry: QueueRegistry, flowId: string) {
+    const record = await loadFlowRecord(registry, flowId);
+    if (!record) return null;
+    assertAllowedFlowQueues(registry, record.jobs.map((job) => job.queueName));
+
+    const nodes: FlowNodeSummary[] = [];
+    const counts: Record<string, number> = Object.create(null);
+    for (const ref of record.jobs) {
+      const { queue } = registry.get(ref.queueName);
+      const job = await queue.getJob(ref.jobId);
+      if (!job) continue;
+      const state = await (job as any).getState();
+      counts[state] = (counts[state] || 0) + 1;
+      nodes.push({
+        ...serializeJob(job),
+        flowId,
+        parentIds: (job as any).parentIds,
+        parentQueues: (job as any).parentQueues,
+        queueName: ref.queueName,
+        state,
+      });
+    }
+
+    let usage: unknown = null;
+    let budget: unknown = null;
+    if (record.roots.length === 1) {
+      const root = record.roots[0];
+      const { queue } = registry.get(root.queueName);
+      try {
+        usage = await (queue as any).getFlowUsage(root.jobId);
+      } catch {
+        usage = null;
+      }
+      try {
+        budget = await (queue as any).getFlowBudget(root.jobId);
+      } catch {
+        budget = null;
+      }
+    }
+
+    return {
+      budget,
+      counts,
+      createdAt: record.createdAt,
+      flowId,
+      kind: record.kind,
+      nodes: nodes.sort((a, b) => a.timestamp - b.timestamp || a.queueName.localeCompare(b.queueName) || a.id.localeCompare(b.id)),
+      roots: record.roots.slice().sort((a, b) => a.queueName.localeCompare(b.queueName) || a.jobId.localeCompare(b.jobId)),
+      tree: buildFlowTreeNodes(flowId, record.roots, nodes),
+      usage,
+    };
   }
 
   function removeBroadcastClient(shared: SharedBroadcastStream, client: BroadcastClient): void {
@@ -147,7 +465,7 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
 
     const worker = new BroadcastWorker(
       name,
-      async (job) => {
+      async (job: any) => {
         const payload = JSON.stringify({
           data: job.data,
           id: job.id,
@@ -250,7 +568,7 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
         }
 
         const { Queue } = require('glide-mq') as typeof import('glide-mq');
-        const summary = await Queue.getUsageSummary({
+        const summary = await (Queue as any).getUsageSummary({
           connection: getLiveConnection('usage summary'),
           endTime: parseIntegerQuery(request.query.end, 'end', { min: 0 }),
           prefix: getRegistry().getPrefix(),
@@ -270,6 +588,158 @@ export const glideMQRoutes: FastifyPluginAsync<GlideMQRoutesOptions> = async (fa
       }
     },
   );
+
+  fastify.post('/flows', async (request, reply) => {
+    try {
+      const registry = getRegistry();
+      const body = (request.body ?? {}) as { budget?: Record<string, unknown>; dag?: DagDefinition; flow?: FlowDefinition };
+
+      if ((!!body.flow && !!body.dag) || (!body.flow && !body.dag)) {
+        return reply.code(400).send({ error: 'Body must include exactly one of: flow, dag' });
+      }
+
+      const connection = getLiveConnection('flow HTTP endpoints');
+
+      const { FlowProducer } = require('glide-mq') as typeof import('glide-mq');
+      const producer = new FlowProducer({ connection, prefix: registry.getPrefix() });
+
+      try {
+        if (body.flow) {
+          const queueNames = collectFlowQueueNames(body.flow);
+          assertAllowedFlowQueues(registry, queueNames);
+          const node = await (producer as any).add(body.flow as any, body.budget ? { budget: body.budget as any } : undefined);
+          const refs: FlowJobRef[] = [];
+
+          const collectRefs = (flowDef: FlowDefinition, jobNode: any) => {
+            refs.push({ jobId: jobNode.job.id, queueName: flowDef.queueName });
+            if (!flowDef.children || !jobNode.children) return;
+            for (let i = 0; i < flowDef.children.length && i < jobNode.children.length; i++) {
+              collectRefs(flowDef.children[i], jobNode.children[i]);
+            }
+          };
+
+          collectRefs(body.flow, node);
+          const root = { jobId: node.job.id, queueName: body.flow.queueName };
+          await registerFlowRecord(registry, node.job.id, 'tree', [root], refs);
+          return reply.code(201).send({ flowId: node.job.id, kind: 'tree', nodeCount: refs.length, root, roots: [root] });
+        }
+
+        if (body.budget) {
+          return reply.code(400).send({ error: 'budget is currently supported only for tree flows' });
+        }
+
+        const dag = body.dag!;
+        const queueNames = collectDagQueueNames(dag);
+        assertAllowedFlowQueues(registry, queueNames);
+        const jobs = await producer.addDAG(dag as any);
+        const flowId = `dag-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+        const refs = dag.nodes.map((dagNode) => {
+          const job = jobs.get(dagNode.name);
+          if (!job) throw new Error(`Missing DAG job for node ${dagNode.name}`);
+          return { jobId: job.id, queueName: dagNode.queueName };
+        });
+        const roots = dag.nodes
+          .filter((dagNode) => !dagNode.deps || dagNode.deps.length === 0)
+          .map((dagNode) => ({ jobId: jobs.get(dagNode.name)!.id, queueName: dagNode.queueName }));
+        await registerFlowRecord(registry, flowId, 'dag', roots, refs);
+        return reply.code(201).send({
+          flowId,
+          jobs: dag.nodes.map((dagNode) => ({
+            id: jobs.get(dagNode.name)!.id,
+            name: dagNode.name,
+            queueName: dagNode.queueName,
+          })),
+          kind: 'dag',
+          nodeCount: refs.length,
+          roots,
+        });
+      } finally {
+        await producer.close().catch(() => undefined);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      return reply.code(flowErrorStatus(message)).send({ error: message });
+    }
+  });
+
+  fastify.get<{ Params: { id: string } }>('/flows/:id', async (request, reply) => {
+    try {
+      const snapshot = await buildFlowSnapshot(getRegistry(), request.params.id);
+      if (!snapshot) {
+        return reply.code(404).send({ error: 'Flow not found' });
+      }
+      return reply.send(snapshot);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      return reply.code(message.includes('not accessible') ? 404 : flowErrorStatus(message)).send({ error: message });
+    }
+  });
+
+  fastify.get<{ Params: { id: string } }>('/flows/:id/tree', async (request, reply) => {
+    try {
+      const snapshot = await buildFlowSnapshot(getRegistry(), request.params.id);
+      if (!snapshot) {
+        return reply.code(404).send({ error: 'Flow not found' });
+      }
+      return reply.send({
+        budget: snapshot.budget,
+        counts: snapshot.counts,
+        createdAt: snapshot.createdAt,
+        flowId: snapshot.flowId,
+        kind: snapshot.kind,
+        roots: snapshot.roots,
+        tree: snapshot.tree,
+        usage: snapshot.usage,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      return reply.code(message.includes('not accessible') ? 404 : flowErrorStatus(message)).send({ error: message });
+    }
+  });
+
+  fastify.delete<{ Params: { id: string } }>('/flows/:id', async (request, reply) => {
+    try {
+      const registry = getRegistry();
+      const flowId = request.params.id;
+      const record = await loadFlowRecord(registry, flowId);
+      if (!record) {
+        return reply.code(404).send({ error: 'Flow not found' });
+      }
+      assertAllowedFlowQueues(registry, record.jobs.map((job) => job.queueName));
+
+      let revoked = 0;
+      let flagged = 0;
+      let skipped = 0;
+      const jobs: Array<{ id: string; queueName: string; state?: string; status: string }> = [];
+
+      for (const ref of record.jobs) {
+        const { queue } = registry.get(ref.queueName);
+        const job = await queue.getJob(ref.jobId);
+        if (!job) {
+          skipped += 1;
+          jobs.push({ id: ref.jobId, queueName: ref.queueName, status: 'missing' });
+          continue;
+        }
+        const state = await (job as any).getState();
+        if (state === 'completed' || state === 'failed') {
+          skipped += 1;
+          jobs.push({ id: ref.jobId, queueName: ref.queueName, state, status: 'skipped' });
+          continue;
+        }
+        const status = await (queue as any).revoke(ref.jobId);
+        if (status === 'revoked') revoked += 1;
+        else if (status === 'flagged') flagged += 1;
+        else skipped += 1;
+        jobs.push({ id: ref.jobId, queueName: ref.queueName, state, status });
+      }
+
+      await deleteFlowRecord(registry, flowId);
+      return reply.send({ flagged, flowId, jobs, revoked, skipped });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Internal server error';
+      return reply.code(message.includes('not accessible') ? 404 : flowErrorStatus(message)).send({ error: message });
+    }
+  });
 
   // POST /:name/jobs - Add a job
   fastify.post<{ Params: { name: string } }>('/:name/jobs', async (request, reply) => {
