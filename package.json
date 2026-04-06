@@ -1,6 +1,6 @@
 {
   "name": "@glidemq/fastify",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Fastify plugin for glide-mq - queue management REST API and SSE events",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
