@@ -19,7 +19,7 @@ npm install @glidemq/fastify glide-mq fastify
 
 Optional - install `zod` for request validation (falls back to manual checks otherwise).
 
-Requires **glide-mq >= 0.14.0** and **Fastify 5+**.
+Requires **glide-mq >= 0.15.2** and **Fastify 5+**.
 
 ## Quick start
 
