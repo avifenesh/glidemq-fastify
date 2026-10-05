@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- Validate against glide-mq 0.17.0 and replace the floating development dependency with an explicit compatible range.
+- Include the merged dependency security updates.
+
 ## 0.3.0
 
 - Expand the Fastify proxy surface to track glide-mq 0.15.0: queue-wide events SSE, per-job lifecycle SSE, `jobs/wait`, workers, metrics, scheduler CRUD, usage summary, broadcast publish/SSE, DLQ inspection/replay, suspended-job inspection, revoke, and queue global rate-limit management.
