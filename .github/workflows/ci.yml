@@ -32,6 +32,9 @@ jobs:
       - name: Audit all dependencies
         run: npm audit --include=dev --audit-level=low
 
+      - name: CI peer-fixture policy
+        run: npm run lint:ci
+
       - name: Typecheck
         run: npx tsc --noEmit
 
@@ -52,7 +55,7 @@ jobs:
 
       - name: Legacy Zod 3 compatibility
         run: |
-          npm install --no-save --package-lock=false zod@3.25.76
+          npm install --save-dev --save-exact zod@3.25.76
           npx vitest run --exclude tests/integration.test.ts
           npx tsc --noEmit
 

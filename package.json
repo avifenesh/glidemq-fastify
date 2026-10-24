@@ -24,7 +24,8 @@
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm test && npm run build"
+    "prepublishOnly": "npm test && npm run build",
+    "lint:ci": "node scripts/check-ci-fixtures.mjs"
   },
   "keywords": [
     "fastify",
