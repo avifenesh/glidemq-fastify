@@ -21,6 +21,8 @@ Optional - install `zod` for request validation (falls back to manual checks oth
 
 Requires **glide-mq >= 0.15.2** and **Fastify 5+**.
 
+Compatibility is tested with **glide-mq 0.20.0**. The minimum supported peer range remains unchanged. With core 0.20.0+, use `registry.get(name).queue.getRepeatableJobsBounded(maxEntries)` for caller-bounded inventory. For validation, prefer patched Zod 4.6.6 or later; legacy Zod 3 compatibility is also tested.
+
 ## Quick start
 
 ```ts

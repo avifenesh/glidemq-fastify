@@ -1,6 +1,6 @@
 {
   "name": "@glidemq/fastify",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Fastify plugin for glide-mq - queue management REST API and SSE events",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,7 +24,8 @@
     "build": "tsc",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm test && npm run build"
+    "prepublishOnly": "npm test && npm run build",
+    "lint:ci": "node scripts/check-ci-fixtures.mjs"
   },
   "keywords": [
     "fastify",
@@ -55,8 +56,8 @@
     "fastify-plugin": "^5.0.0"
   },
   "peerDependencies": {
-    "glide-mq": ">=0.15.2",
     "fastify": ">=5.0.0",
+    "glide-mq": ">=0.15.2",
     "zod": ">=3.0.0"
   },
   "peerDependenciesMeta": {
@@ -67,9 +68,9 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "fastify": "^5.12.5",
-    "glide-mq": "^0.17.0",
+    "glide-mq": "^0.20.0",
     "typescript": "^5.7.0",
-    "vitest": "^4.1.0",
-    "zod": "^3.24.0"
+    "vitest": "^4.1.12",
+    "zod": "^4.6.7"
   }
 }

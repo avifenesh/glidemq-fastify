@@ -1,7 +1,7 @@
-let z: typeof import('zod') | null = null;
+let z: typeof import("zod") | null = null;
 
 try {
-  z = require('zod');
+  z = require("zod");
 } catch {
   // Zod not installed - validation disabled
 }
@@ -23,16 +23,26 @@ export function buildSchemas() {
         attempts: z.number().optional(),
         timeout: z.number().optional(),
         removeOnComplete: z
-          .union([z.boolean(), z.number(), z.object({ age: z.number(), count: z.number() })])
+          .union([
+            z.boolean(),
+            z.number(),
+            z.object({ age: z.number(), count: z.number() }),
+          ])
           .optional(),
-        removeOnFail: z.union([z.boolean(), z.number(), z.object({ age: z.number(), count: z.number() })]).optional(),
+        removeOnFail: z
+          .union([
+            z.boolean(),
+            z.number(),
+            z.object({ age: z.number(), count: z.number() }),
+          ])
+          .optional(),
         jobId: z.string().optional(),
         lifo: z.boolean().optional(),
         deduplication: z
           .object({
             id: z.string(),
             ttl: z.number().optional(),
-            mode: z.enum(['simple', 'throttle', 'debounce']).optional(),
+            mode: z.enum(["simple", "throttle", "debounce"]).optional(),
           })
           .optional(),
         ordering: z
@@ -62,11 +72,13 @@ export function buildSchemas() {
   });
 
   const getJobsQuerySchema = z.object({
-    type: z.enum(['waiting', 'active', 'delayed', 'completed', 'failed']).default('waiting'),
+    type: z
+      .enum(["waiting", "active", "delayed", "completed", "failed"])
+      .default("waiting"),
     start: z.coerce.number().default(0),
     end: z.coerce.number().default(-1),
     excludeData: z
-      .preprocess((v) => v === 'true' || v === '1' || v === true, z.boolean())
+      .preprocess((v) => v === "true" || v === "1" || v === true, z.boolean())
       .optional()
       .default(false),
   });
@@ -74,7 +86,7 @@ export function buildSchemas() {
   const cleanQuerySchema = z.object({
     grace: z.coerce.number().int().min(0).default(0),
     limit: z.coerce.number().int().min(1).default(100),
-    type: z.enum(['completed', 'failed']).default('completed'),
+    type: z.enum(["completed", "failed"]).default("completed"),
   });
 
   const retryBodySchema = z.object({
@@ -82,7 +94,7 @@ export function buildSchemas() {
   });
 
   const metricsQuerySchema = z.object({
-    type: z.enum(['completed', 'failed']),
+    type: z.enum(["completed", "failed"]),
     start: z.coerce.number().default(0),
     end: z.coerce.number().default(-1),
   });
@@ -109,7 +121,7 @@ export function buildSchemas() {
       .object({
         name: z.string().optional(),
         data: z.unknown().optional(),
-        opts: z.record(z.unknown()).optional(),
+        opts: z.record(z.string(), z.unknown()).optional(),
       })
       .optional(),
   });
@@ -124,16 +136,26 @@ export function buildSchemas() {
         attempts: z.number().optional(),
         timeout: z.number().optional(),
         removeOnComplete: z
-          .union([z.boolean(), z.number(), z.object({ age: z.number(), count: z.number() })])
+          .union([
+            z.boolean(),
+            z.number(),
+            z.object({ age: z.number(), count: z.number() }),
+          ])
           .optional(),
-        removeOnFail: z.union([z.boolean(), z.number(), z.object({ age: z.number(), count: z.number() })]).optional(),
+        removeOnFail: z
+          .union([
+            z.boolean(),
+            z.number(),
+            z.object({ age: z.number(), count: z.number() }),
+          ])
+          .optional(),
         jobId: z.string().optional(),
         lifo: z.boolean().optional(),
         deduplication: z
           .object({
             id: z.string(),
             ttl: z.number().optional(),
-            mode: z.enum(['simple', 'throttle', 'debounce']).optional(),
+            mode: z.enum(["simple", "throttle", "debounce"]).optional(),
           })
           .optional(),
         ordering: z
